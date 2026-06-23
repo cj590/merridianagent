@@ -67,7 +67,8 @@ export async function createLightspeedProduct(productData) {
   }
 
   const product = await lsRequest('POST', '2.0/products', productPayload);
-  const productId = product.data?.id;
+  // API returns data as array of IDs or as object with id field
+  const productId = Array.isArray(product.data) ? product.data[0] : product.data?.id;
 
   if (!productId) {
     throw new Error('Product created but no ID returned: ' + JSON.stringify(product));
