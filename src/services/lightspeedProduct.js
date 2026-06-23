@@ -5,10 +5,13 @@ async function lsRequest(method, endpoint, data = null) {
   const token = await getLightspeedToken();
   const prefix = process.env.LIGHTSPEED_STORE_PREFIX;
   const baseURL = `https://${prefix}.retail.lightspeed.app/api`;
+  const fullUrl = `${baseURL}/${endpoint}`;
+
+  console.log(`[LS] ${method} ${fullUrl}`, data ? JSON.stringify(data) : '');
 
   const config = {
     method,
-    url: `${baseURL}/${endpoint}`,
+    url: fullUrl,
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
@@ -21,8 +24,9 @@ async function lsRequest(method, endpoint, data = null) {
     const response = await axios(config);
     return response.data;
   } catch (err) {
-    console.error('Lightspeed API error:', err.response?.data || err.message);
-    throw new Error(`Lightspeed API error: ${err.response?.data?.message || err.message}`);
+    const errData = err.response?.data;
+    console.error(`[LS] Error ${err.response?.status} on ${method} ${fullUrl}:`, errData);
+    throw new Error(`Lightspeed API error on ${endpoint}: ${JSON.stringify(errData) || err.message}`);
   }
 }
 
@@ -39,7 +43,6 @@ export async function createLightspeedProduct(productData) {
     images,
   } = productData;
 
-  // Build description with dimensions included
   const fullDescription = buildDescription(description, dimensions);
 
   // 1. Create the product
@@ -49,12 +52,6 @@ export async function createLightspeedProduct(productData) {
     type: 'standard',
   };
 
-  if (category) {
-    // Try to find or create category
-    const categoryId = await findOrCreateCategory(category);
-    if (categoryId) productPayload.product_type_id = categoryId;
-  }
-
   if (retailPrice) {
     productPayload.price_standard = {
       tax_exclusive: String(retailPrice),
@@ -62,17 +59,28 @@ export async function createLightspeedProduct(productData) {
   }
 
   const product = await lsRequest('POST', '2.0/products', productPayload);
-  const productId = product.data.id;
+  const productId = product.data?.id;
+
+  if (!productId) {
+    throw new Error('Product created but no ID returned: ' + JSON.stringify(product));
+  }
+
+  console.log(`[LS] Product created: ${productId}`);
 
   // 2. Add supplier info
   if (supplierName || vendorItemCode) {
-    await addSupplierToProduct(productId, supplierName, vendorItemCode, supplierPrice);
+    await addSupplierToProduct(productId, supplierName, vendorItemCode, supplierPrice).catch(err => {
+      console.warn('[LS] Supplier add failed (non-fatal):', err.message);
+    });
   }
 
-  // 3. Upload primary image to Lightspeed (first image only — rest go to Shopify)
+  // 3. Upload primary image to Lightspeed
   let lightspeedImageUrl = null;
   if (images && images.length > 0) {
-    lightspeedImageUrl = await uploadImageToLightspeed(productId, images[0]);
+    lightspeedImageUrl = await uploadImageToLightspeed(productId, images[0]).catch(err => {
+      console.warn('[LS] Image upload failed (non-fatal):', err.message);
+      return null;
+    });
   }
 
   return {
@@ -83,12 +91,17 @@ export async function createLightspeedProduct(productData) {
 }
 
 async function addSupplierToProduct(productId, supplierName, supplierCode, supplierPrice) {
-  // First find the supplier ID
+  // Find supplier by name
   let supplierId = null;
   if (supplierName) {
-    const suppliers = await lsRequest('GET', '2.0/suppliers?name=' + encodeURIComponent(supplierName));
-    if (suppliers.data?.length > 0) {
-      supplierId = suppliers.data[0].id;
+    try {
+      const suppliers = await lsRequest('GET', `2.0/suppliers?name=${encodeURIComponent(supplierName)}`);
+      if (suppliers.data?.length > 0) {
+        supplierId = suppliers.data[0].id;
+        console.log(`[LS] Found supplier: ${supplierId}`);
+      }
+    } catch (err) {
+      console.warn('[LS] Supplier lookup failed:', err.message);
     }
   }
 
@@ -102,19 +115,6 @@ async function addSupplierToProduct(productId, supplierName, supplierCode, suppl
   await lsRequest('POST', `2.0/products/${productId}/supplier_products`, payload);
 }
 
-async function findOrCreateCategory(categoryName) {
-  try {
-    const res = await lsRequest('GET', `2.0/product_types?name=${encodeURIComponent(categoryName)}`);
-    if (res.data?.length > 0) return res.data[0].id;
-
-    // Create it
-    const created = await lsRequest('POST', '2.0/product_types', { name: categoryName });
-    return created.data?.id || null;
-  } catch {
-    return null;
-  }
-}
-
 async function uploadImageToLightspeed(productId, imageUrl) {
   try {
     const res = await lsRequest('POST', `2.0/products/${productId}/images`, {
@@ -122,7 +122,7 @@ async function uploadImageToLightspeed(productId, imageUrl) {
     });
     return res.data?.url || null;
   } catch (err) {
-    console.warn('Image upload to Lightspeed failed:', err.message);
+    console.warn('[LS] Image upload failed:', err.message);
     return null;
   }
 }
