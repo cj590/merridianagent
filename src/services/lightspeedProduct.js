@@ -1,13 +1,21 @@
 import axios from 'axios';
 
+function getShopifyConfig() {
+  // Strip any surrounding quotes Railway may add
+  const store = (process.env.SHOPIFY_STORE || '').replace(/^["']|["']$/g, '').trim();
+  const token = (process.env.SHOPIFY_ACCESS_TOKEN || '').replace(/^["']|["']$/g, '').trim();
+  console.log(`[Shopify] Store: ${store} | Token prefix: ${token.slice(0, 15)}`);
+  return { store, token };
+}
+
 async function shopifyRequest(method, endpoint, data = null) {
-  const { SHOPIFY_STORE, SHOPIFY_ACCESS_TOKEN } = process.env;
+  const { store, token } = getShopifyConfig();
 
   const config = {
     method,
-    url: `https://${SHOPIFY_STORE}/admin/api/2024-10/${endpoint}`,
+    url: `https://${store}/admin/api/2024-10/${endpoint}`,
     headers: {
-      'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+      'X-Shopify-Access-Token': token,
       'Content-Type': 'application/json',
     },
   };
