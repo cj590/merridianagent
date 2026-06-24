@@ -2,12 +2,12 @@ import axios from 'axios';
 import { getLightspeedToken } from './lightspeedAuth.js';
 
 async function lsRequest(method, endpoint, data = null) {
-  const token = await getLightspeedToken();
-  const prefix = process.env.LIGHTSPEED_STORE_PREFIX;
+  const token = (await getLightspeedToken()).replace(/^["']|["']$/g, '').trim();
+  const prefix = (process.env.LIGHTSPEED_STORE_PREFIX || '').replace(/^["']|["']$/g, '').trim();
   const baseURL = `https://${prefix}.retail.lightspeed.app/api`;
   const fullUrl = `${baseURL}/${endpoint}`;
 
-  console.log(`[LS] ${method} ${fullUrl}`, data ? JSON.stringify(data).slice(0, 200) : '');
+  console.log(`[LS] ${method} ${fullUrl}`, data ? JSON.stringify(data).slice(0, 100) : '');
 
   const config = {
     method,
@@ -45,10 +45,10 @@ export async function createLightspeedProduct(productData) {
 
   const fullDescription = buildDescription(description, dimensions);
 
-  // 1. Find or create product type (category)
+  // 1. Find existing product type (don't try to create)
   let productTypeId = null;
   if (category) {
-    productTypeId = await findOrCreateProductType(category);
+    productTypeId = await findProductType(category);
   }
 
   // 2. Create the product
@@ -67,7 +67,6 @@ export async function createLightspeedProduct(productData) {
   }
 
   const product = await lsRequest('POST', '2.0/products', productPayload);
-  // API returns data as array of IDs or as object with id field
   const productId = Array.isArray(product.data) ? product.data[0] : product.data?.id;
 
   if (!productId) {
@@ -76,29 +75,28 @@ export async function createLightspeedProduct(productData) {
 
   console.log(`[LS] Product created: ${productId}`);
 
-  // 3. Add supplier info
+  // 3. Find supplier and link via catalog
   if (supplierName || vendorItemCode) {
-    await addSupplierToProduct(productId, supplierName, vendorItemCode, supplierPrice).catch(err => {
-      console.warn('[LS] Supplier add failed (non-fatal):', err.message);
+    await linkSupplier(productId, supplierName, vendorItemCode, supplierPrice).catch(err => {
+      console.warn('[LS] Supplier link failed (non-fatal):', err.message);
     });
   }
 
-  // 4. Upload images via URL
-  let lightspeedImageUrl = null;
+  // 4. Upload image
   if (images && images.length > 0) {
-    lightspeedImageUrl = await uploadImageToLightspeed(productId, images[0]);
+    await uploadImage(productId, images[0]).catch(err => {
+      console.warn('[LS] Image upload failed (non-fatal):', err.message);
+    });
   }
 
   return {
     lightspeedProductId: productId,
-    lightspeedImageUrl,
     product: product.data,
   };
 }
 
-async function findOrCreateProductType(categoryName) {
+async function findProductType(categoryName) {
   try {
-    // List all product types and find a match
     const res = await lsRequest('GET', '2.0/product_types?page_size=100');
     const types = res.data || [];
     const match = types.find(t => t.name?.toLowerCase() === categoryName.toLowerCase());
@@ -106,61 +104,58 @@ async function findOrCreateProductType(categoryName) {
       console.log(`[LS] Found product type: ${match.id} (${match.name})`);
       return match.id;
     }
-
-    // Create it
-    const created = await lsRequest('POST', '2.0/product_types', { name: categoryName });
-    console.log(`[LS] Created product type: ${created.data?.id}`);
-    return created.data?.id || null;
+    // Try to create it
+    try {
+      const created = await lsRequest('POST', '2.0/product_types', { name: categoryName });
+      return Array.isArray(created.data) ? created.data[0] : created.data?.id;
+    } catch {
+      return null;
+    }
   } catch (err) {
-    console.warn('[LS] Product type lookup/create failed (non-fatal):', err.message);
+    console.warn('[LS] Product type lookup failed:', err.message);
     return null;
   }
 }
 
-async function addSupplierToProduct(productId, supplierName, supplierCode, supplierPrice) {
+async function linkSupplier(productId, supplierName, supplierCode, supplierPrice) {
+  // Find supplier ID
   let supplierId = null;
-  if (supplierName) {
-    try {
-      const res = await lsRequest('GET', `2.0/suppliers?page_size=100`);
-      const suppliers = res.data || [];
-      const match = suppliers.find(s => s.name?.toLowerCase() === supplierName.toLowerCase());
-      if (match) {
-        supplierId = match.id;
-        console.log(`[LS] Found supplier: ${supplierId}`);
-      }
-    } catch (err) {
-      console.warn('[LS] Supplier lookup failed:', err.message);
-    }
+  try {
+    const res = await lsRequest('GET', '2.0/suppliers?page_size=100');
+    const suppliers = res.data || [];
+    const match = suppliers.find(s => s.name?.toLowerCase() === supplierName?.toLowerCase());
+    if (match) supplierId = match.id;
+  } catch (err) {
+    console.warn('[LS] Supplier lookup failed:', err.message);
   }
 
-  const payload = {
+  if (!supplierId) {
+    console.warn(`[LS] Supplier "${supplierName}" not found in Lightspeed — skipping supplier link`);
+    return;
+  }
+
+  // Use the correct endpoint for linking supplier to product
+  await lsRequest('POST', `2.0/supplier_products`, {
+    product_id: productId,
+    supplier_id: supplierId,
     supplier_code: supplierCode || '',
     price: supplierPrice ? String(supplierPrice) : '0',
-  };
+  });
 
-  if (supplierId) payload.supplier_id = supplierId;
-
-  await lsRequest('POST', `2.0/products/${productId}/supplier_products`, payload);
-  console.log(`[LS] Supplier added to product ${productId}`);
+  console.log(`[LS] Supplier linked to product ${productId}`);
 }
 
-async function uploadImageToLightspeed(productId, imageUrl) {
+async function uploadImage(productId, imageUrl) {
   try {
-    // Download image and upload as base64
-    const imgResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
-    const base64 = Buffer.from(imgResponse.data).toString('base64');
-    const contentType = imgResponse.headers['content-type'] || 'image/jpeg';
-
-    const res = await lsRequest('POST', `2.0/products/${productId}/images`, {
-      content: base64,
-      content_type: contentType,
+    // Try URL-based upload first
+    const res = await lsRequest('POST', `2.0/images`, {
+      product_id: productId,
+      url: imageUrl,
     });
-
-    console.log(`[LS] Image uploaded to product ${productId}`);
-    return res.data?.url || null;
+    console.log(`[LS] Image uploaded via URL`);
+    return res;
   } catch (err) {
-    console.warn('[LS] Image upload failed (non-fatal):', err.message);
-    return null;
+    console.warn('[LS] Image URL upload failed:', err.message);
   }
 }
 
