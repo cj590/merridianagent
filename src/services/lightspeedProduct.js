@@ -1,21 +1,19 @@
 import axios from 'axios';
+import { getLightspeedToken } from './lightspeedAuth.js';
 
-function getShopifyConfig() {
-  // Strip any surrounding quotes Railway may add
-  const store = (process.env.SHOPIFY_STORE || '').replace(/^["']|["']$/g, '').trim();
-  const token = (process.env.SHOPIFY_ACCESS_TOKEN || '').replace(/^["']|["']$/g, '').trim();
-  console.log(`[Shopify] Store: ${store} | Token prefix: ${token.slice(0, 15)}`);
-  return { store, token };
-}
+async function lsRequest(method, endpoint, data = null) {
+  const token = await getLightspeedToken();
+  const prefix = process.env.LIGHTSPEED_STORE_PREFIX;
+  const baseURL = `https://${prefix}.retail.lightspeed.app/api`;
+  const fullUrl = `${baseURL}/${endpoint}`;
 
-async function shopifyRequest(method, endpoint, data = null) {
-  const { store, token } = getShopifyConfig();
+  console.log(`[LS] ${method} ${fullUrl}`, data ? JSON.stringify(data).slice(0, 200) : '');
 
   const config = {
     method,
-    url: `https://${store}/admin/api/2024-10/${endpoint}`,
+    url: fullUrl,
     headers: {
-      'X-Shopify-Access-Token': token,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
   };
@@ -26,90 +24,158 @@ async function shopifyRequest(method, endpoint, data = null) {
     const response = await axios(config);
     return response.data;
   } catch (err) {
-    console.error('Shopify API error:', err.response?.data || err.message);
-    throw new Error(`Shopify API error: ${JSON.stringify(err.response?.data) || err.message}`);
+    const errData = err.response?.data;
+    console.error(`[LS] Error ${err.response?.status} on ${method} ${fullUrl}:`, errData);
+    throw new Error(`Lightspeed API error on ${endpoint}: ${JSON.stringify(errData) || err.message}`);
   }
 }
 
-export async function createShopifyProduct(productData, lightspeedProductId) {
+export async function createLightspeedProduct(productData) {
   const {
     name,
     description,
     vendorItemCode,
     category,
     dimensions,
-    images,
+    supplierName,
+    supplierPrice,
     retailPrice,
-    vendor,
+    images,
   } = productData;
 
-  const fullDescription = buildHtmlDescription(description, dimensions);
+  const fullDescription = buildDescription(description, dimensions);
 
-  const payload = {
-    product: {
-      title: name,
-      body_html: fullDescription,
-      vendor: vendor || 'Unknown',
-      product_type: category || 'Furniture',
-      tags: [vendorItemCode, vendor, category].filter(Boolean).join(', '),
-      variants: [
-        {
-          price: retailPrice ? String(retailPrice) : '0.00',
-          sku: vendorItemCode || '',
-          inventory_management: 'shopify',
-        },
-      ],
-      images: images?.slice(0, 1).map((src) => ({ src })) || [],
-    },
+  // 1. Find or create product type (category)
+  let productTypeId = null;
+  if (category) {
+    productTypeId = await findOrCreateProductType(category);
+  }
+
+  // 2. Create the product
+  const productPayload = {
+    name,
+    description: fullDescription,
+    type: 'standard',
   };
 
-  console.log(`[Shopify] Creating product: ${name}`);
-  const result = await shopifyRequest('POST', 'products.json', payload);
-  console.log(`[Shopify] Product created: ${result.product?.id}`);
-  return result.product;
+  if (productTypeId) productPayload.product_type_id = productTypeId;
+
+  if (retailPrice) {
+    productPayload.price_standard = {
+      tax_exclusive: String(retailPrice),
+    };
+  }
+
+  const product = await lsRequest('POST', '2.0/products', productPayload);
+  // API returns data as array of IDs or as object with id field
+  const productId = Array.isArray(product.data) ? product.data[0] : product.data?.id;
+
+  if (!productId) {
+    throw new Error('Product created but no ID returned: ' + JSON.stringify(product));
+  }
+
+  console.log(`[LS] Product created: ${productId}`);
+
+  // 3. Add supplier info
+  if (supplierName || vendorItemCode) {
+    await addSupplierToProduct(productId, supplierName, vendorItemCode, supplierPrice).catch(err => {
+      console.warn('[LS] Supplier add failed (non-fatal):', err.message);
+    });
+  }
+
+  // 4. Upload images via URL
+  let lightspeedImageUrl = null;
+  if (images && images.length > 0) {
+    lightspeedImageUrl = await uploadImageToLightspeed(productId, images[0]);
+  }
+
+  return {
+    lightspeedProductId: productId,
+    lightspeedImageUrl,
+    product: product.data,
+  };
 }
 
-export async function pushImagesToShopifyProduct(shopifyProductId, imageUrls) {
-  const results = [];
+async function findOrCreateProductType(categoryName) {
+  try {
+    // List all product types and find a match
+    const res = await lsRequest('GET', '2.0/product_types?page_size=100');
+    const types = res.data || [];
+    const match = types.find(t => t.name?.toLowerCase() === categoryName.toLowerCase());
+    if (match) {
+      console.log(`[LS] Found product type: ${match.id} (${match.name})`);
+      return match.id;
+    }
 
-  for (const src of imageUrls) {
+    // Create it
+    const created = await lsRequest('POST', '2.0/product_types', { name: categoryName });
+    console.log(`[LS] Created product type: ${created.data?.id}`);
+    return created.data?.id || null;
+  } catch (err) {
+    console.warn('[LS] Product type lookup/create failed (non-fatal):', err.message);
+    return null;
+  }
+}
+
+async function addSupplierToProduct(productId, supplierName, supplierCode, supplierPrice) {
+  let supplierId = null;
+  if (supplierName) {
     try {
-      const res = await shopifyRequest('POST', `products/${shopifyProductId}/images.json`, {
-        image: { src },
-      });
-      results.push({ src, success: true, id: res.image?.id });
-      console.log(`[Shopify] Image added: ${src}`);
+      const res = await lsRequest('GET', `2.0/suppliers?page_size=100`);
+      const suppliers = res.data || [];
+      const match = suppliers.find(s => s.name?.toLowerCase() === supplierName.toLowerCase());
+      if (match) {
+        supplierId = match.id;
+        console.log(`[LS] Found supplier: ${supplierId}`);
+      }
     } catch (err) {
-      results.push({ src, success: false, error: err.message });
-      console.warn(`[Shopify] Image failed: ${src}`, err.message);
+      console.warn('[LS] Supplier lookup failed:', err.message);
     }
   }
 
-  return results;
+  const payload = {
+    supplier_code: supplierCode || '',
+    price: supplierPrice ? String(supplierPrice) : '0',
+  };
+
+  if (supplierId) payload.supplier_id = supplierId;
+
+  await lsRequest('POST', `2.0/products/${productId}/supplier_products`, payload);
+  console.log(`[LS] Supplier added to product ${productId}`);
 }
 
-function buildHtmlDescription(description, dimensions) {
-  let html = '';
+async function uploadImageToLightspeed(productId, imageUrl) {
+  try {
+    // Download image and upload as base64
+    const imgResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const base64 = Buffer.from(imgResponse.data).toString('base64');
+    const contentType = imgResponse.headers['content-type'] || 'image/jpeg';
 
-  if (description) {
-    html += `<p>${description}</p>`;
+    const res = await lsRequest('POST', `2.0/products/${productId}/images`, {
+      content: base64,
+      content_type: contentType,
+    });
+
+    console.log(`[LS] Image uploaded to product ${productId}`);
+    return res.data?.url || null;
+  } catch (err) {
+    console.warn('[LS] Image upload failed (non-fatal):', err.message);
+    return null;
   }
+}
+
+function buildDescription(description, dimensions) {
+  let parts = [];
+  if (description) parts.push(description);
 
   if (dimensions) {
-    const rows = [];
-    if (dimensions.outside) rows.push(['Overall', dimensions.outside]);
-    if (dimensions.inside) rows.push(['Interior', dimensions.inside]);
-    if (dimensions.seatHeight) rows.push(['Seat Height', dimensions.seatHeight]);
-    if (dimensions.armHeight) rows.push(['Arm Height', dimensions.armHeight]);
-
-    if (rows.length) {
-      html += '<table><tbody>';
-      rows.forEach(([label, value]) => {
-        html += `<tr><td><strong>${label}</strong></td><td>${value}</td></tr>`;
-      });
-      html += '</tbody></table>';
-    }
+    const dimLines = [];
+    if (dimensions.outside) dimLines.push(`Outside: ${dimensions.outside}`);
+    if (dimensions.inside) dimLines.push(`Inside: ${dimensions.inside}`);
+    if (dimensions.seatHeight) dimLines.push(`Seat Height: ${dimensions.seatHeight}`);
+    if (dimensions.armHeight) dimLines.push(`Arm Height: ${dimensions.armHeight}`);
+    if (dimLines.length) parts.push(dimLines.join(' | '));
   }
 
-  return html;
+  return parts.join('\n\n');
 }
