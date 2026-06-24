@@ -1,14 +1,19 @@
 import axios from 'axios';
 
-async function shopifyRequest(method, endpoint, data = null) {
-  const { SHOPIFY_STORE, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET } = process.env;
+function getShopifyConfig() {
+  // Strip any surrounding quotes Railway may add
+  const store = (process.env.SHOPIFY_STORE || '').replace(/^["']|["']$/g, '').trim();
+  const token = (process.env.SHOPIFY_ACCESS_TOKEN || '').replace(/^["']|["']$/g, '').trim();
+  console.log(`[Shopify] Store: ${store} | Token prefix: ${token.slice(0, 15)}`);
+  return { store, token };
+}
 
-  // Use client secret as access token (Shopify new auth flow)
-  const token = SHOPIFY_CLIENT_SECRET;
+async function shopifyRequest(method, endpoint, data = null) {
+  const { store, token } = getShopifyConfig();
 
   const config = {
     method,
-    url: `https://${SHOPIFY_STORE}/admin/api/2024-10/${endpoint}`,
+    url: `https://${store}/admin/api/2024-10/${endpoint}`,
     headers: {
       'X-Shopify-Access-Token': token,
       'Content-Type': 'application/json',
@@ -40,7 +45,6 @@ export async function createShopifyProduct(productData, lightspeedProductId) {
 
   const fullDescription = buildHtmlDescription(description, dimensions);
 
-  // Build Shopify product payload
   const payload = {
     product: {
       title: name,
@@ -55,11 +59,13 @@ export async function createShopifyProduct(productData, lightspeedProductId) {
           inventory_management: 'shopify',
         },
       ],
-      images: images?.map((src) => ({ src })) || [],
+      images: images?.slice(0, 1).map((src) => ({ src })) || [],
     },
   };
 
+  console.log(`[Shopify] Creating product: ${name}`);
   const result = await shopifyRequest('POST', 'products.json', payload);
+  console.log(`[Shopify] Product created: ${result.product?.id}`);
   return result.product;
 }
 
@@ -72,8 +78,10 @@ export async function pushImagesToShopifyProduct(shopifyProductId, imageUrls) {
         image: { src },
       });
       results.push({ src, success: true, id: res.image?.id });
+      console.log(`[Shopify] Image added: ${src}`);
     } catch (err) {
       results.push({ src, success: false, error: err.message });
+      console.warn(`[Shopify] Image failed: ${src}`, err.message);
     }
   }
 
