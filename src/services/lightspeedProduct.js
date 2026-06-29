@@ -32,15 +32,32 @@ export async function createLightspeedProduct(productData) {
 
   const fullDescription = buildDescription(description, dimensions);
 
-  // 1. Find product type
-  let productTypeId = await findProductType(category).catch(() => null);
+  // 1. Find product type (optional — skip if not found or error)
+  let productTypeId = null;
+  try {
+    productTypeId = await findProductType(category);
+  } catch (err) {
+    console.warn('[LS] Product type lookup failed (non-fatal):', err.message);
+  }
 
   // 2. Create product
   const productPayload = { name, description: fullDescription, type: 'standard' };
   if (productTypeId) productPayload.product_type_id = productTypeId;
   if (retailPrice) productPayload.price_excluding_tax = parseFloat(retailPrice);
 
-  const product = await lsRequest('POST', '2.0/products', productPayload);
+  let product;
+  try {
+    product = await lsRequest('POST', '2.0/products', productPayload);
+  } catch (err) {
+    if (err.message.includes('leaf category') && productPayload.product_type_id) {
+      // Retry without product type
+      console.warn('[LS] Retrying without product_type_id due to leaf category error');
+      delete productPayload.product_type_id;
+      product = await lsRequest('POST', '2.0/products', productPayload);
+    } else {
+      throw err;
+    }
+  }
   const productId = Array.isArray(product.data) ? product.data[0] : product.data?.id;
 
   if (!productId) throw new Error('No product ID returned: ' + JSON.stringify(product));
