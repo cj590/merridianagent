@@ -59,20 +59,26 @@ router.get('/products', async (req, res) => {
     const search = (req.query.search || '').toLowerCase().trim();
 
     let allProducts = [];
-    let offset = 0;
+    let after = null;
     const pageSize = 250;
 
-    while (offset <= 5500) {
-      const result = await lsRequest('GET', `2.0/products?page_size=${pageSize}&offset=${offset}`);
+    while (true) {
+      const url = after
+        ? `2.0/products?page_size=${pageSize}&after=${after}`
+        : `2.0/products?page_size=${pageSize}`;
+
+      const result = await lsRequest('GET', url);
       const data = result.data || [];
       allProducts = allProducts.concat(data);
+
       if (data.length < pageSize) break;
-      offset += pageSize;
+      after = result.version?.max;
+      if (!after) break;
+      if (allProducts.length > 6000) break;
     }
 
     console.log(`[Products] Total raw: ${allProducts.length}`);
 
-    // Deduplicate by ID only
     const seen = new Set();
     const all = allProducts
       .filter(p => {
@@ -95,6 +101,7 @@ router.get('/products', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
 
 // POST /api/po — create a purchase order in Lightspeed
 router.post('/', async (req, res) => {
