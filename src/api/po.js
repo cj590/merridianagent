@@ -61,21 +61,26 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 async function fetchAllProducts() {
   const now = Date.now();
   if (productCache.length > 0 && now - productCacheTime < CACHE_TTL) {
+    console.log(`[Products] Returning cached ${productCache.length} products`);
     return productCache;
   }
 
   let allProducts = [];
   let offset = 0;
-  const pageSize = 200;
+  const pageSize = 250;
 
   while (true) {
+    console.log(`[Products] Fetching offset=${offset}...`);
     const result = await lsRequest('GET', `2.0/products?page_size=${pageSize}&offset=${offset}`);
     const data = result.data || [];
     allProducts = allProducts.concat(data);
+    console.log(`[Products] Got ${data.length}, total so far: ${allProducts.length}`);
     if (data.length < pageSize) break;
     offset += pageSize;
-    if (offset > 4000) break;
+    if (offset > 5000) break;
   }
+
+  console.log(`[Products] Done fetching. Total raw: ${allProducts.length}`);
 
   // Deduplicate by name
   const seen = new Set();
@@ -88,6 +93,7 @@ async function fetchAllProducts() {
     .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
     .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
+  console.log(`[Products] Unique products: ${unique.length}`);
   productCache = unique;
   productCacheTime = now;
   return unique;
