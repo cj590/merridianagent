@@ -88,9 +88,7 @@ async function fetchAllProducts() {
     const seen = new Set();
     const unique = allProducts
       .filter(p => {
-        // Only keep parent products (no variant_parent_id) and skip duplicates
-        if (!p.name) return false;
-        if (p.variant_parent_id) return false;
+        if (!p.name || !p.id) return false;
         if (seen.has(p.id)) return false;
         seen.add(p.id);
         return true;
