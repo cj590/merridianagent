@@ -88,8 +88,11 @@ async function fetchAllProducts() {
     const seen = new Set();
     const unique = allProducts
       .filter(p => {
-        if (!p.name || seen.has(p.name.toLowerCase())) return false;
-        seen.add(p.name.toLowerCase());
+        // Only keep parent products (no variant_parent_id) and skip duplicates
+        if (!p.name) return false;
+        if (p.variant_parent_id) return false;
+        if (seen.has(p.id)) return false;
+        seen.add(p.id);
         return true;
       })
       .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
