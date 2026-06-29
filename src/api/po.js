@@ -53,34 +53,57 @@ router.get('/outlets', async (req, res) => {
   }
 });
 
+// Simple in-memory cache for products
+let productCache = [];
+let productCacheTime = 0;
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function fetchAllProducts() {
+  const now = Date.now();
+  if (productCache.length > 0 && now - productCacheTime < CACHE_TTL) {
+    return productCache;
+  }
+
+  let allProducts = [];
+  let offset = 0;
+  const pageSize = 200;
+
+  while (true) {
+    const result = await lsRequest('GET', `2.0/products?page_size=${pageSize}&offset=${offset}`);
+    const data = result.data || [];
+    allProducts = allProducts.concat(data);
+    if (data.length < pageSize) break;
+    offset += pageSize;
+    if (offset > 4000) break;
+  }
+
+  // Deduplicate by name
+  const seen = new Set();
+  const unique = allProducts
+    .filter(p => {
+      if (!p.name || seen.has(p.name.toLowerCase())) return false;
+      seen.add(p.name.toLowerCase());
+      return true;
+    })
+    .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  productCache = unique;
+  productCacheTime = now;
+  return unique;
+}
+
 // GET /api/po/products?search=xxx — search products via Lightspeed directly
 router.get('/products', async (req, res) => {
   try {
     const search = (req.query.search || '').toLowerCase().trim();
-
-    // Fetch all products using offset pagination
-    let allProducts = [];
-    let offset = 0;
-    const pageSize = 200;
-
-    while (true) {
-      const result = await lsRequest('GET', `2.0/products?page_size=${pageSize}&offset=${offset}`);
-      const data = result.data || [];
-      allProducts = allProducts.concat(data);
-      if (data.length < pageSize) break;
-      offset += pageSize;
-      if (offset > 3000) break; // safety cap
-    }
+    const all = await fetchAllProducts();
 
     const filtered = search
-      ? allProducts.filter(p => p.name?.toLowerCase().includes(search))
-      : allProducts;
+      ? all.filter(p => p.name?.toLowerCase().includes(search))
+      : all;
 
-    const products = filtered
-      .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
-      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-
-    res.json({ success: true, products, total: allProducts.length });
+    res.json({ success: true, products: filtered, total: all.length });
   } catch (err) {
     console.error('[PO Products]', err.message);
     res.status(500).json({ success: false, error: err.message });
