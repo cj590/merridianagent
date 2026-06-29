@@ -53,64 +53,37 @@ router.get('/outlets', async (req, res) => {
   }
 });
 
-// Simple in-memory cache for products
-let productCache = [];
-let productCacheTime = 0;
-let productFetchPromise = null;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// GET /api/po/products?search=xxx — search products via Lightspeed directly
+router.get('/products', async (req, res) => {
+  try {
+    const search = (req.query.search || '').toLowerCase().trim();
 
-async function fetchAllProducts() {
-  const now = Date.now();
-  if (productCache.length > 0 && now - productCacheTime < CACHE_TTL) {
-    return productCache;
-  }
-
-  // Prevent concurrent fetches — return same promise if already in progress
-  if (productFetchPromise) return productFetchPromise;
-
-  productFetchPromise = (async () => {
     let allProducts = [];
     let offset = 0;
     const pageSize = 250;
 
-    while (offset <= 5000) {
-      console.log(`[Products] Fetching offset=${offset}...`);
+    while (offset <= 5500) {
       const result = await lsRequest('GET', `2.0/products?page_size=${pageSize}&offset=${offset}`);
       const data = result.data || [];
       allProducts = allProducts.concat(data);
-      console.log(`[Products] Got ${data.length}, total so far: ${allProducts.length}`);
       if (data.length < pageSize) break;
       offset += pageSize;
     }
 
-    console.log(`[Products] Done. Total raw: ${allProducts.length}`);
+    console.log(`[Products] Total raw: ${allProducts.length}`);
 
+    // Deduplicate by ID only
     const seen = new Set();
-    const unique = allProducts
+    const all = allProducts
       .filter(p => {
-        if (!p.name || !p.id) return false;
-        if (seen.has(p.id)) return false;
+        if (!p.name || !p.id || seen.has(p.id)) return false;
         seen.add(p.id);
         return true;
       })
       .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
-    console.log(`[Products] Unique: ${unique.length}`);
-    productCache = unique;
-    productCacheTime = Date.now();
-    productFetchPromise = null;
-    return unique;
-  })();
-
-  return productFetchPromise;
-}
-
-// GET /api/po/products?search=xxx — search products via Lightspeed directly
-router.get('/products', async (req, res) => {
-  try {
-    const search = (req.query.search || '').toLowerCase().trim();
-    const all = await fetchAllProducts();
+    console.log(`[Products] Unique by ID: ${all.length}`);
 
     const filtered = search
       ? all.filter(p => p.name?.toLowerCase().includes(search))
