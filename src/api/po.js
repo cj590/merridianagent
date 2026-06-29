@@ -53,48 +53,68 @@ router.get('/outlets', async (req, res) => {
   }
 });
 
+// In-memory product cache
+let _productCache = null;
+let _productCacheTime = 0;
+let _productFetchPromise = null;
+const CACHE_TTL = 3 * 60 * 1000; // 3 minutes
+
 // GET /api/po/products?search=xxx — search products via Lightspeed directly
 router.get('/products', async (req, res) => {
   try {
     const search = (req.query.search || '').toLowerCase().trim();
 
-    let allProducts = [];
-    let after = null;
-    const pageSize = 250;
-
-    while (true) {
-      const url = after
-        ? `2.0/products?page_size=${pageSize}&after=${after}`
-        : `2.0/products?page_size=${pageSize}`;
-
-      const result = await lsRequest('GET', url);
-      const data = result.data || [];
-      allProducts = allProducts.concat(data);
-
-      if (data.length < pageSize) break;
-      after = result.version?.max;
-      if (!after) break;
-      if (allProducts.length > 6000) break;
+    // Return cache if fresh
+    const now = Date.now();
+    if (_productCache && now - _productCacheTime < CACHE_TTL) {
+      const filtered = search ? _productCache.filter(p => p.name?.toLowerCase().includes(search)) : _productCache;
+      return res.json({ success: true, products: filtered, total: _productCache.length });
     }
 
-    console.log(`[Products] Total raw: ${allProducts.length}`);
+    // Prevent concurrent fetches
+    if (!_productFetchPromise) {
+      _productFetchPromise = (async () => {
+        let allProducts = [];
+        let after = null;
+        const pageSize = 250;
 
-    const seen = new Set();
-    const all = allProducts
-      .filter(p => {
-        if (!p.name || !p.id || seen.has(p.id)) return false;
-        seen.add(p.id);
-        return true;
-      })
-      .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
-      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        while (true) {
+          const url = after
+            ? `2.0/products?page_size=${pageSize}&deleted=false&after=${after}`
+            : `2.0/products?page_size=${pageSize}&deleted=false`;
 
-    console.log(`[Products] Unique by ID: ${all.length}`);
+          const result = await lsRequest('GET', url);
+          const data = result.data || [];
+          allProducts = allProducts.concat(data);
 
-    const filtered = search
-      ? all.filter(p => p.name?.toLowerCase().includes(search))
-      : all;
+          if (data.length < pageSize) break;
+          after = result.version?.max;
+          if (!after) break;
+          if (allProducts.length > 10000) break;
+        }
 
+        console.log(`[Products] Total raw: ${allProducts.length}`);
+
+        const seen = new Set();
+        const unique = allProducts
+          .filter(p => {
+            if (!p.name || !p.id || seen.has(p.id)) return false;
+            seen.add(p.id);
+            return true;
+          })
+          .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
+          .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+        console.log(`[Products] Unique: ${unique.length}`);
+        _productCache = unique;
+        _productCacheTime = Date.now();
+        _productFetchPromise = null;
+        return unique;
+      })();
+    }
+
+    const all = await _productFetchPromise;
+    const filtered = search ? all.filter(p => p.name?.toLowerCase().includes(search)) : all;
     res.json({ success: true, products: filtered, total: all.length });
   } catch (err) {
     console.error('[PO Products]', err.message);
