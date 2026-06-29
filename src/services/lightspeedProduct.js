@@ -45,24 +45,13 @@ export async function createLightspeedProduct(productData) {
   if (!productId) throw new Error('No product ID returned: ' + JSON.stringify(product));
   console.log(`[LS] Product created: ${productId}`);
 
-  // 3. Set retail price via price books (versioned API endpoint)
+  // 3. Set retail price via product update
   if (retailPrice) {
     try {
-      const priceBooksRes = await lsRequest('GET', '2.0/price_books?page_size=50');
-      const priceBooks = priceBooksRes.data || [];
-      const generalPriceBook = priceBooks.find(pb =>
-        pb.name?.toLowerCase().includes('general') || pb.is_default
-      );
-
-      if (generalPriceBook) {
-        // API requires { data: [{ product_id, price }] }
-        await lsRequest('POST', `2026-04/price_books/${generalPriceBook.id}/products`, {
-          data: [{ product_id: productId, price: String(retailPrice) }]
-        });
-        console.log(`[LS] Retail price set: $${retailPrice}`);
-      } else {
-        console.warn('[LS] No General Price Book found, available:', priceBooks.map(pb => pb.name));
-      }
+      await lsRequest('PUT', `2.0/products/${productId}`, {
+        price: String(retailPrice),
+      });
+      console.log(`[LS] Retail price set: $${retailPrice}`);
     } catch (err) {
       console.warn('[LS] Price set failed (non-fatal):', err.message);
     }
