@@ -1,11 +1,11 @@
 import { scrapeCRLaine } from './crlaine.js';
 import { scrapeBernhardt } from './bernhardt.js';
+import { scrapeUniversal } from './universal.js';
 
 export function detectVendor(url) {
   if (url.includes('crlaine.com')) return 'crlaine';
   if (url.includes('bernhardt.com')) return 'bernhardt';
-  // Add more vendors here as we expand
-  return 'unknown';
+  return 'universal';
 }
 
 export async function scrapeProduct(url, vendorCredentials = {}) {
@@ -19,6 +19,7 @@ export async function scrapeProduct(url, vendorCredentials = {}) {
       return await scrapeBernhardt(url, vendorCredentials.bernhardt || null);
 
     default:
-      throw new Error(`Unsupported vendor URL: ${url}. Supported vendors: CR Laine, Bernhardt.`);
+      // Universal AI-powered scraper for all other vendors
+      return await scrapeUniversal(url);
   }
 }
