@@ -53,41 +53,38 @@ router.get('/outlets', async (req, res) => {
   }
 });
 
-// GET /api/po/products?search=xxx — search products via Shopify (faster name search)
+// GET /api/po/products?search=xxx — search products via Lightspeed directly
 router.get('/products', async (req, res) => {
   try {
-    const search = (req.query.search || '').trim();
-    const SHOPIFY_STORE = (process.env.SHOPIFY_STORE || '').replace(/^["']|["']$/g, '').trim();
-    const SHOPIFY_ACCESS_TOKEN = (process.env.SHOPIFY_ACCESS_TOKEN || '').replace(/^["']|["']$/g, '').trim();
+    const search = (req.query.search || '').toLowerCase().trim();
 
-    const url = search
-      ? `https://${SHOPIFY_STORE}/admin/api/2024-10/products.json?title=${encodeURIComponent(search)}&limit=20&fields=id,title,variants`
-      : `https://${SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=50&fields=id,title,variants&order=title asc`;
+    // Fetch from Lightspeed directly - page through results
+    let allProducts = [];
+    let version = null;
 
-    const response = await axios.get(url, {
-      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN }
-    });
+    for (let page = 0; page < 15; page++) {
+      const url = version
+        ? `2.0/products?page_size=200&after=${version}`
+        : `2.0/products?page_size=200`;
 
-    const products = (response.data.products || []).map(p => ({
-      id: p.id,
-      name: p.title,
-      sku: p.variants?.[0]?.sku || '',
-      shopifyId: p.id,
-    }));
+      const result = await lsRequest('GET', url);
+      const data = result.data || [];
+      allProducts = allProducts.concat(data);
 
-    // Also try to find matching Lightspeed product IDs by name
-    // For PO creation we need the LS product ID
-    const lsProducts = await lsRequest('GET', `2.0/products?page_size=200`);
-    const lsMap = {};
-    (lsProducts.data || []).forEach(p => { lsMap[p.name?.toLowerCase()] = p.id; });
+      if (data.length < 200) break;
+      version = result.version;
+      if (!version) break;
+    }
 
-    const enriched = products.map(p => ({
-      ...p,
-      id: lsMap[p.name?.toLowerCase()] || p.id,
-      lightspeedId: lsMap[p.name?.toLowerCase()] || null,
-    }));
+    const filtered = search
+      ? allProducts.filter(p => p.name?.toLowerCase().includes(search))
+      : allProducts;
 
-    res.json({ success: true, products: enriched });
+    const products = filtered
+      .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    res.json({ success: true, products });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -136,7 +133,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    const poUrl = `https://merridian.retail.lightspeed.app/inventory/purchase-orders/${consignmentId}`;
+    const poUrl = `https://merridian.retail.lightspeed.app/inventory/purchase-order/${consignmentId}/edit`;
 
     res.json({
       success: true,
