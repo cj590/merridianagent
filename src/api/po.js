@@ -53,16 +53,22 @@ router.get('/outlets', async (req, res) => {
   }
 });
 
-// GET /api/po/products?search=xxx — search products for line item adding
+// GET /api/po/products?search=xxx — fetch all products, filter by name
 router.get('/products', async (req, res) => {
   try {
-    const search = req.query.search || '';
-    const result = await lsRequest('GET', `2.0/products?page_size=20&name=${encodeURIComponent(search)}`);
-    const products = (result.data || []).map(p => ({
+    const search = (req.query.search || '').toLowerCase().trim();
+    const result = await lsRequest('GET', `2.0/products?page_size=200&deleted=false`);
+    const all = result.data || [];
+    const filtered = search
+      ? all.filter(p => p.name?.toLowerCase().includes(search))
+      : all;
+
+    const products = filtered.slice(0, 50).map(p => ({
       id: p.id,
       name: p.name,
-      sku: p.variants?.[0]?.sku || '',
+      sku: p.source_variant_id || '',
     }));
+
     res.json({ success: true, products });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
