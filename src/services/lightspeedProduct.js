@@ -45,10 +45,9 @@ export async function createLightspeedProduct(productData) {
   if (!productId) throw new Error('No product ID returned: ' + JSON.stringify(product));
   console.log(`[LS] Product created: ${productId}`);
 
-  // 3. Set retail price via General Price Book
+  // 3. Set retail price via price books (versioned API endpoint)
   if (retailPrice) {
     try {
-      // Get the General Price Book ID
       const priceBooksRes = await lsRequest('GET', '2.0/price_books?page_size=50');
       const priceBooks = priceBooksRes.data || [];
       const generalPriceBook = priceBooks.find(pb =>
@@ -56,24 +55,25 @@ export async function createLightspeedProduct(productData) {
       );
 
       if (generalPriceBook) {
-        await lsRequest('PATCH', `2.0/price_books/${generalPriceBook.id}/products`, [
-          { product_id: productId, price: String(retailPrice) }
-        ]);
+        // API requires { data: [{ product_id, price }] }
+        await lsRequest('POST', `2026-04/price_books/${generalPriceBook.id}/products`, {
+          data: [{ product_id: productId, price: String(retailPrice) }]
+        });
         console.log(`[LS] Retail price set: $${retailPrice}`);
       } else {
-        console.warn('[LS] No General Price Book found');
+        console.warn('[LS] No General Price Book found, available:', priceBooks.map(pb => pb.name));
       }
     } catch (err) {
       console.warn('[LS] Price set failed (non-fatal):', err.message);
     }
   }
 
-  // 3. Link supplier
+  // 4. Link supplier
   await linkSupplier(productId, supplierName, vendorItemCode, supplierPrice).catch(err => {
     console.warn('[LS] Supplier link failed (non-fatal):', err.message);
   });
 
-  // 4. Upload image as multipart/form-data
+  // 5. Upload image
   if (images?.length > 0) {
     await uploadImageMultipart(productId, images[0]).catch(err => {
       console.warn('[LS] Image upload failed (non-fatal):', err.message);
@@ -85,22 +85,25 @@ export async function createLightspeedProduct(productData) {
 
 async function findProductType(categoryName) {
   if (!categoryName) return null;
-  const res = await lsRequest('GET', '2.0/product_types?page_size=100');
+  // Increase page size to get all types
+  const res = await lsRequest('GET', '2.0/product_types?page_size=250');
   const types = res.data || [];
   const match = types.find(t => t.name?.toLowerCase() === categoryName.toLowerCase());
   if (match) {
     console.log(`[LS] Found product type: ${match.id} (${match.name})`);
     return match.id;
   }
-  // Only try to create if truly not found
   try {
     const created = await lsRequest('POST', '2.0/product_types', { name: categoryName });
     return Array.isArray(created.data) ? created.data[0] : created.data?.id;
   } catch (err) {
-    // If it already exists (422), extract the existing ID
-    if (err.message.includes('already exists')) {
-      const idMatch = err.message.match(/existing_id":"([^"]+)"/);
-      if (idMatch) return idMatch[1];
+    // Extract existing ID from 422 error
+    if (err.message.includes('existing_id')) {
+      const idMatch = err.message.match(/"existing_id":"([^"]+)"/);
+      if (idMatch) {
+        console.log(`[LS] Using existing product type: ${idMatch[1]}`);
+        return idMatch[1];
+      }
     }
     return null;
   }
@@ -108,34 +111,34 @@ async function findProductType(categoryName) {
 
 async function linkSupplier(productId, supplierName, supplierCode, supplierPrice) {
   if (!supplierName) return;
-  const res = await lsRequest('GET', '2.0/suppliers?page_size=100');
+  const res = await lsRequest('GET', '2.0/suppliers?page_size=200');
   const suppliers = res.data || [];
 
-  // Try exact match first, then partial match
   const searchName = supplierName.toLowerCase();
   const match = suppliers.find(s => s.name?.toLowerCase() === searchName)
     || suppliers.find(s => s.name?.toLowerCase().includes(searchName))
     || suppliers.find(s => searchName.split(' ').some(word => word.length > 3 && s.name?.toLowerCase().includes(word)));
 
-  if (!match) { console.warn(`[LS] Supplier "${supplierName}" not found`); return; }
+  if (!match) {
+    console.warn(`[LS] Supplier "${supplierName}" not found among: ${suppliers.slice(0, 5).map(s => s.name).join(', ')}`);
+    return;
+  }
 
-  await lsRequest('POST', `2.0/supplier_products`, {
-    product_id: productId,
+  // Correct endpoint: POST to products/{id}/supplier_products
+  await lsRequest('POST', `2.0/products/${productId}/supplier_products`, {
     supplier_id: match.id,
     supplier_code: supplierCode || '',
     price: supplierPrice ? String(supplierPrice) : '0',
   });
-  console.log(`[LS] Supplier linked: ${match.id}`);
+  console.log(`[LS] Supplier linked: ${match.name}`);
 }
 
 async function uploadImageMultipart(productId, imageUrl) {
-  // Download image
   const imgResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
   const imageBuffer = Buffer.from(imgResponse.data);
   const contentType = imgResponse.headers['content-type'] || 'image/jpeg';
   const ext = contentType.split('/')[1] || 'jpg';
 
-  // Build multipart form
   const form = new FormData();
   form.append('image', imageBuffer, { filename: `product.${ext}`, contentType });
 
