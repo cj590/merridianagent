@@ -38,6 +38,7 @@ export async function createLightspeedProduct(productData) {
   // 2. Create product
   const productPayload = { name, description: fullDescription, type: 'standard' };
   if (productTypeId) productPayload.product_type_id = productTypeId;
+  if (retailPrice) productPayload.price_excluding_tax = parseFloat(retailPrice);
 
   const product = await lsRequest('POST', '2.0/products', productPayload);
   const productId = Array.isArray(product.data) ? product.data[0] : product.data?.id;
@@ -45,14 +46,9 @@ export async function createLightspeedProduct(productData) {
   if (!productId) throw new Error('No product ID returned: ' + JSON.stringify(product));
   console.log(`[LS] Product created: ${productId}`);
 
-  // 3. Set retail price and supplier via API 2.1 PUT (supports both in one call)
+  // 3. Link supplier via API 2.1 PUT
   const updatePayload = {};
-
-  if (retailPrice) {
-    updatePayload.price = String(retailPrice);
-  }
-
-  if (supplierName || vendorItemCode) {
+  if (supplierName) {
     const supplierId = await findSupplierId(supplierName);
     if (supplierId) {
       updatePayload.common = {
@@ -68,9 +64,9 @@ export async function createLightspeedProduct(productData) {
   if (Object.keys(updatePayload).length > 0) {
     try {
       await lsRequest('PUT', `2.1/products/${productId}`, updatePayload);
-      console.log(`[LS] Product updated with price/supplier`);
+      console.log(`[LS] Supplier linked`);
     } catch (err) {
-      console.warn('[LS] Product update failed (non-fatal):', err.message);
+      console.warn('[LS] Supplier link failed (non-fatal):', err.message);
     }
   }
 
