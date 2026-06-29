@@ -56,10 +56,9 @@ export async function createLightspeedProduct(productData) {
       );
 
       if (generalPriceBook) {
-        await lsRequest('POST', `2.0/price_books/${generalPriceBook.id}/products`, {
-          product_id: productId,
-          price: String(retailPrice),
-        });
+        await lsRequest('PATCH', `2.0/price_books/${generalPriceBook.id}/products`, [
+          { product_id: productId, price: String(retailPrice) }
+        ]);
         console.log(`[LS] Retail price set: $${retailPrice}`);
       } else {
         console.warn('[LS] No General Price Book found');
@@ -89,18 +88,35 @@ async function findProductType(categoryName) {
   const res = await lsRequest('GET', '2.0/product_types?page_size=100');
   const types = res.data || [];
   const match = types.find(t => t.name?.toLowerCase() === categoryName.toLowerCase());
-  if (match) return match.id;
+  if (match) {
+    console.log(`[LS] Found product type: ${match.id} (${match.name})`);
+    return match.id;
+  }
+  // Only try to create if truly not found
   try {
     const created = await lsRequest('POST', '2.0/product_types', { name: categoryName });
     return Array.isArray(created.data) ? created.data[0] : created.data?.id;
-  } catch { return null; }
+  } catch (err) {
+    // If it already exists (422), extract the existing ID
+    if (err.message.includes('already exists')) {
+      const idMatch = err.message.match(/existing_id":"([^"]+)"/);
+      if (idMatch) return idMatch[1];
+    }
+    return null;
+  }
 }
 
 async function linkSupplier(productId, supplierName, supplierCode, supplierPrice) {
   if (!supplierName) return;
   const res = await lsRequest('GET', '2.0/suppliers?page_size=100');
   const suppliers = res.data || [];
-  const match = suppliers.find(s => s.name?.toLowerCase() === supplierName?.toLowerCase());
+
+  // Try exact match first, then partial match
+  const searchName = supplierName.toLowerCase();
+  const match = suppliers.find(s => s.name?.toLowerCase() === searchName)
+    || suppliers.find(s => s.name?.toLowerCase().includes(searchName))
+    || suppliers.find(s => searchName.split(' ').some(word => word.length > 3 && s.name?.toLowerCase().includes(word)));
+
   if (!match) { console.warn(`[LS] Supplier "${supplierName}" not found`); return; }
 
   await lsRequest('POST', `2.0/supplier_products`, {
