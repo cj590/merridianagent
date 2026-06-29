@@ -38,13 +38,25 @@ export async function createLightspeedProduct(productData) {
   // 2. Create product
   const productPayload = { name, description: fullDescription, type: 'standard' };
   if (productTypeId) productPayload.product_type_id = productTypeId;
-  if (retailPrice) productPayload.price_standard = { tax_exclusive: String(retailPrice) };
 
   const product = await lsRequest('POST', '2.0/products', productPayload);
   const productId = Array.isArray(product.data) ? product.data[0] : product.data?.id;
 
   if (!productId) throw new Error('No product ID returned: ' + JSON.stringify(product));
   console.log(`[LS] Product created: ${productId}`);
+
+  // 3. Set retail price via price endpoint
+  if (retailPrice) {
+    await lsRequest('POST', `2.0/products/${productId}/price_sets`, {
+      price: String(retailPrice),
+    }).catch(err => {
+      console.warn('[LS] Price set failed, trying price field:', err.message);
+      // Fallback: update product with price field
+      return lsRequest('PUT', `2.0/products/${productId}`, {
+        price: String(retailPrice),
+      }).catch(() => {});
+    });
+  }
 
   // 3. Link supplier
   await linkSupplier(productId, supplierName, vendorItemCode, supplierPrice).catch(err => {
