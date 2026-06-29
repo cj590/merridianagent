@@ -58,22 +58,18 @@ router.get('/products', async (req, res) => {
   try {
     const search = (req.query.search || '').toLowerCase().trim();
 
-    // Fetch from Lightspeed directly - page through results
+    // Fetch all products using offset pagination
     let allProducts = [];
-    let version = null;
+    let offset = 0;
+    const pageSize = 200;
 
-    for (let page = 0; page < 15; page++) {
-      const url = version
-        ? `2.0/products?page_size=200&after=${version}`
-        : `2.0/products?page_size=200`;
-
-      const result = await lsRequest('GET', url);
+    while (true) {
+      const result = await lsRequest('GET', `2.0/products?page_size=${pageSize}&offset=${offset}`);
       const data = result.data || [];
       allProducts = allProducts.concat(data);
-
-      if (data.length < 200) break;
-      version = result.version;
-      if (!version) break;
+      if (data.length < pageSize) break;
+      offset += pageSize;
+      if (offset > 3000) break; // safety cap
     }
 
     const filtered = search
@@ -84,8 +80,9 @@ router.get('/products', async (req, res) => {
       .map(p => ({ id: p.id, name: p.name, sku: p.source_variant_id || '' }))
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
-    res.json({ success: true, products });
+    res.json({ success: true, products, total: allProducts.length });
   } catch (err) {
+    console.error('[PO Products]', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
