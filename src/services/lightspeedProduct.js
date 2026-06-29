@@ -45,24 +45,36 @@ export async function createLightspeedProduct(productData) {
   if (!productId) throw new Error('No product ID returned: ' + JSON.stringify(product));
   console.log(`[LS] Product created: ${productId}`);
 
-  // 3. Set retail price via product update
+  // 3. Set retail price and supplier via API 2.1 PUT (supports both in one call)
+  const updatePayload = {};
+
   if (retailPrice) {
-    try {
-      await lsRequest('PUT', `2.0/products/${productId}`, {
-        price: String(retailPrice),
-      });
-      console.log(`[LS] Retail price set: $${retailPrice}`);
-    } catch (err) {
-      console.warn('[LS] Price set failed (non-fatal):', err.message);
+    updatePayload.price = String(retailPrice);
+  }
+
+  if (supplierName || vendorItemCode) {
+    const supplierId = await findSupplierId(supplierName);
+    if (supplierId) {
+      updatePayload.common = {
+        product_suppliers: [{
+          supplier_id: supplierId,
+          code: vendorItemCode || '',
+          price: supplierPrice ? supplierPrice : 0,
+        }]
+      };
     }
   }
 
-  // 4. Link supplier
-  await linkSupplier(productId, supplierName, vendorItemCode, supplierPrice).catch(err => {
-    console.warn('[LS] Supplier link failed (non-fatal):', err.message);
-  });
+  if (Object.keys(updatePayload).length > 0) {
+    try {
+      await lsRequest('PUT', `2.1/products/${productId}`, updatePayload);
+      console.log(`[LS] Product updated with price/supplier`);
+    } catch (err) {
+      console.warn('[LS] Product update failed (non-fatal):', err.message);
+    }
+  }
 
-  // 5. Upload image
+  // 4. Upload image
   if (images?.length > 0) {
     await uploadImageMultipart(productId, images[0]).catch(err => {
       console.warn('[LS] Image upload failed (non-fatal):', err.message);
@@ -98,28 +110,25 @@ async function findProductType(categoryName) {
   }
 }
 
-async function linkSupplier(productId, supplierName, supplierCode, supplierPrice) {
-  if (!supplierName) return;
-  const res = await lsRequest('GET', '2.0/suppliers?page_size=200');
-  const suppliers = res.data || [];
-
-  const searchName = supplierName.toLowerCase();
-  const match = suppliers.find(s => s.name?.toLowerCase() === searchName)
-    || suppliers.find(s => s.name?.toLowerCase().includes(searchName))
-    || suppliers.find(s => searchName.split(' ').some(word => word.length > 3 && s.name?.toLowerCase().includes(word)));
-
-  if (!match) {
-    console.warn(`[LS] Supplier "${supplierName}" not found among: ${suppliers.slice(0, 5).map(s => s.name).join(', ')}`);
-    return;
+async function findSupplierId(supplierName) {
+  if (!supplierName) return null;
+  try {
+    const res = await lsRequest('GET', '2.0/suppliers?page_size=200');
+    const suppliers = res.data || [];
+    const searchName = supplierName.toLowerCase();
+    const match = suppliers.find(s => s.name?.toLowerCase() === searchName)
+      || suppliers.find(s => s.name?.toLowerCase().includes(searchName))
+      || suppliers.find(s => searchName.split(' ').some(word => word.length > 3 && s.name?.toLowerCase().includes(word)));
+    if (match) {
+      console.log(`[LS] Found supplier: ${match.name}`);
+      return match.id;
+    }
+    console.warn(`[LS] Supplier "${supplierName}" not found`);
+    return null;
+  } catch (err) {
+    console.warn('[LS] Supplier lookup failed:', err.message);
+    return null;
   }
-
-  // Correct endpoint: POST to products/{id}/supplier_products
-  await lsRequest('POST', `2.0/products/${productId}/supplier_products`, {
-    supplier_id: match.id,
-    supplier_code: supplierCode || '',
-    price: supplierPrice ? String(supplierPrice) : '0',
-  });
-  console.log(`[LS] Supplier linked: ${match.name}`);
 }
 
 async function uploadImageMultipart(productId, imageUrl) {
