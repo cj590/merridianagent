@@ -2,7 +2,6 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 
 export async function scrapeUniversal(url) {
-  // Fetch the page
   const response = await axios.get(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -13,67 +12,100 @@ export async function scrapeUniversal(url) {
 
   const $ = cheerio.load(response.data);
 
-  // Remove script/style tags to clean up text
-  $('script, style, nav, footer, header').remove();
+  // ── Name ──────────────────────────────────────────────────────────────────
+  // Try common product name selectors in order of specificity
+  const name =
+    $('h1').first().text().trim() ||
+    $('[class*="product-title"]').first().text().trim() ||
+    $('[class*="product-name"]').first().text().trim() ||
+    $('[class*="product_title"]').first().text().trim() ||
+    $('title').text().split('|')[0].split('-')[0].trim() ||
+    'Unknown Product';
 
-  // Get page text (trimmed)
-  const pageText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 8000);
+  // ── SKU / Item code ────────────────────────────────────────────────────────
+  const bodyText = $('body').text();
+  let vendorItemCode =
+    $('[class*="sku"]').first().text().replace(/sku|item|#|:/gi, '').trim() ||
+    $('[class*="model"]').first().text().replace(/model|#|:/gi, '').trim() ||
+    $('[class*="part"]').first().text().replace(/part|#|:/gi, '').trim() ||
+    '';
 
-  // Get all images
-  const images = [];
-  $('img').each((i, el) => {
-    const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-lazy-src');
-    if (!src) return;
-    const abs = src.startsWith('http') ? src : new URL(src, url).href;
-    // Filter out small UI images (icons, logos etc)
-    if (abs.match(/\.(jpg|jpeg|png|webp)/i) && !abs.match(/icon|logo|sprite|banner|arrow|chevron|svg/i)) {
-      images.push(abs);
-    }
-  });
-
-  // Extract vendor name from domain
-  const domain = new URL(url).hostname.replace('www.', '');
-  const vendorName = domain.split('.')[0].replace(/([a-z])([A-Z])/g, '$1 $2');
-
-  // Use Claude API to extract product details from page text
-  const prompt = `Extract product information from this furniture/home decor product page text. Return ONLY a JSON object with these fields:
-- name: product name (string)
-- vendorItemCode: SKU or item/model number (string)  
-- description: product description (string, 1-3 sentences max)
-- category: one of: Sofas, Chairs, Tables, Lighting, Mirrors, Rugs, Accessories, Art, Bedding, Storage, Outdoor, Dining (string)
-- dimensions: { outside, inside, seatHeight, armHeight } (strings, null if not found)
-- weight: shipping weight if mentioned (string, null if not found)
-
-Page URL: ${url}
-Page text: ${pageText}
-
-Return ONLY the JSON object, no other text.`;
-
-  const apiResponse = await axios.post('https://api.anthropic.com/v1/messages', {
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1000,
-    messages: [{ role: 'user', content: prompt }],
-  }, {
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  let extracted;
-  try {
-    const text = apiResponse.data.content[0].text;
-    const clean = text.replace(/```json|```/g, '').trim();
-    extracted = JSON.parse(clean);
-  } catch (err) {
-    throw new Error(`Failed to parse product details from page: ${err.message}`);
+  // Try to find SKU pattern in text (e.g. "SKU: ABC123", "Item: L4658T")
+  if (!vendorItemCode) {
+    const skuMatch = bodyText.match(/(?:sku|item #?|model #?|part #?|style #?)[:\s]+([A-Z0-9\-]+)/i);
+    if (skuMatch) vendorItemCode = skuMatch[1].trim();
   }
 
+  // ── Description ───────────────────────────────────────────────────────────
+  const description =
+    $('meta[name="description"]').attr('content')?.trim() ||
+    $('[class*="product-description"]').first().text().trim() ||
+    $('[class*="product_description"]').first().text().trim() ||
+    $('[class*="description"]').first().text().trim().slice(0, 500) ||
+    '';
+
+  // ── Category ──────────────────────────────────────────────────────────────
+  const pageContent = bodyText.toLowerCase();
+  const categoryMap = [
+    ['sofa', 'Sofas'], ['sectional', 'Sofas'], ['loveseat', 'Sofas'],
+    ['chair', 'Chairs'], ['ottoman', 'Chairs'], ['recliner', 'Chairs'],
+    ['table lamp', 'Lighting'], ['floor lamp', 'Lighting'], ['pendant', 'Lighting'], ['chandelier', 'Lighting'], ['sconce', 'Lighting'],
+    ['dining table', 'Tables'], ['coffee table', 'Tables'], ['end table', 'Tables'], ['console', 'Tables'], ['desk', 'Tables'],
+    ['mirror', 'Mirrors'],
+    ['rug', 'Rugs'], ['carpet', 'Rugs'],
+    ['bed', 'Bedding'], ['pillow', 'Bedding'], ['throw', 'Bedding'],
+    ['art', 'Art'], ['print', 'Art'], ['canvas', 'Art'],
+    ['cabinet', 'Storage'], ['bookcase', 'Storage'], ['shelf', 'Storage'], ['dresser', 'Storage'],
+    ['outdoor', 'Outdoor'], ['patio', 'Outdoor'],
+    ['dining', 'Dining'],
+  ];
+  let category = 'Accessories';
+  for (const [keyword, cat] of categoryMap) {
+    if (pageContent.includes(keyword)) { category = cat; break; }
+  }
+
+  // ── Dimensions ────────────────────────────────────────────────────────────
+  const dimMatch = bodyText.match(/(\d+[\d\s"'x×.]+(?:W|H|D|L|wide|high|deep|tall)[^.]*)/i);
+  const dimensions = {
+    outside: dimMatch ? dimMatch[1].trim() : null,
+    inside: null,
+    seatHeight: null,
+    armHeight: null,
+  };
+
+  // ── Images ────────────────────────────────────────────────────────────────
+  const images = [];
+  const seen = new Set();
+
+  $('img').each((i, el) => {
+    const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-lazy-src') || $(el).attr('data-original');
+    if (!src) return;
+    const abs = src.startsWith('http') ? src : (() => { try { return new URL(src, url).href; } catch { return null; } })();
+    if (!abs) return;
+    if (seen.has(abs)) return;
+    if (!abs.match(/\.(jpg|jpeg|png|webp)/i)) return;
+    if (abs.match(/icon|logo|sprite|banner|arrow|chevron|placeholder|blank/i)) return;
+    seen.add(abs);
+    images.push(abs);
+  });
+
+  // Also check og:image
+  const ogImage = $('meta[property="og:image"]').attr('content');
+  if (ogImage && !seen.has(ogImage)) images.unshift(ogImage);
+
+  // ── Vendor name from domain ────────────────────────────────────────────────
+  const domain = new URL(url).hostname.replace('www.', '');
+  const domainName = domain.split('.')[0];
+  const vendor = domainName.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, c => c.toUpperCase());
+
   return {
-    vendor: vendorName.charAt(0).toUpperCase() + vendorName.slice(1),
-    vendorItemCode: extracted.vendorItemCode || '',
-    name: extracted.name || 'Unknown Product',
-    description: extracted.description || '',
-    category: extracted.category || 'Accessories',
-    dimensions: extracted.dimensions || {},
-    weight: extracted.weight || null,
+    vendor,
+    vendorItemCode: vendorItemCode || '',
+    name: name.split('\n')[0].trim(),
+    description: description.split('\n')[0].trim().slice(0, 500),
+    category,
+    dimensions,
+    weight: null,
     images: images.slice(0, 6),
     sourceUrl: url,
   };
