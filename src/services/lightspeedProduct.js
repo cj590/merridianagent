@@ -145,7 +145,15 @@ async function findSupplierId(supplierName) {
 }
 
 async function uploadImageMultipart(productId, imageUrl) {
-  const imgResponse = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+  const imgResponse = await axios.get(imageUrl, {
+    responseType: 'arraybuffer',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+      'Referer': new URL(imageUrl).origin,
+    },
+    timeout: 15000,
+  });
   const imageBuffer = Buffer.from(imgResponse.data);
   const contentType = imgResponse.headers['content-type'] || 'image/jpeg';
   const ext = contentType.split('/')[1] || 'jpg';
