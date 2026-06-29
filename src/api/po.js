@@ -95,18 +95,20 @@ router.get('/products', async (req, res) => {
 
 // POST /api/po — create a purchase order in Lightspeed
 router.post('/', async (req, res) => {
-  const { supplierId, outletId, lineItems, name } = req.body;
+  const { supplierId, outletIds, outletId, lineItems, name } = req.body;
+  const outlets = outletIds || (outletId ? [outletId] : []);
 
-  if (!supplierId || !outletId || !lineItems?.length) {
-    return res.status(400).json({ error: 'supplierId, outletId, and lineItems are required' });
+  if (!supplierId || !outlets.length || !lineItems?.length) {
+    return res.status(400).json({ error: 'supplierId, outletIds, and lineItems are required' });
   }
 
   try {
-    // 1. Create the consignment (PO)
+    // Create one consignment with outlet_ids array
     const consignment = await lsRequest('POST', '2.0/consignments', {
       name: name || `PO - ${new Date().toLocaleDateString()}`,
       supplier_id: supplierId,
-      outlet_id: outletId,
+      outlet_id: outlets[0], // primary outlet
+      outlet_ids: outlets,   // all outlets
       type: 'SUPPLIER',
       status: 'OPEN',
     });
@@ -116,10 +118,9 @@ router.post('/', async (req, res) => {
       : consignment.data?.id;
 
     if (!consignmentId) throw new Error('No consignment ID returned');
-
     console.log(`[PO] Consignment created: ${consignmentId}`);
 
-    // 2. Add line items
+    // Add line items
     const lineResults = [];
     for (const item of lineItems) {
       try {
