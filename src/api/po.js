@@ -1,6 +1,6 @@
 import express from 'express';
-import { getLightspeedToken } from '../services/lightspeedAuth.js';
 import axios from 'axios';
+import { getLightspeedToken } from '../services/lightspeedAuth.js';
 
 const router = express.Router();
 
@@ -53,23 +53,41 @@ router.get('/outlets', async (req, res) => {
   }
 });
 
-// GET /api/po/products?search=xxx — fetch all products, filter by name
+// GET /api/po/products?search=xxx — search products via Shopify (faster name search)
 router.get('/products', async (req, res) => {
   try {
-    const search = (req.query.search || '').toLowerCase().trim();
-    const result = await lsRequest('GET', `2.0/products?page_size=200&deleted=false`);
-    const all = result.data || [];
-    const filtered = search
-      ? all.filter(p => p.name?.toLowerCase().includes(search))
-      : all;
+    const search = (req.query.search || '').trim();
+    const SHOPIFY_STORE = (process.env.SHOPIFY_STORE || '').replace(/^["']|["']$/g, '').trim();
+    const SHOPIFY_ACCESS_TOKEN = (process.env.SHOPIFY_ACCESS_TOKEN || '').replace(/^["']|["']$/g, '').trim();
 
-    const products = filtered.slice(0, 50).map(p => ({
+    const url = search
+      ? `https://${SHOPIFY_STORE}/admin/api/2024-10/products.json?title=${encodeURIComponent(search)}&limit=20&fields=id,title,variants`
+      : `https://${SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=50&fields=id,title,variants&order=title asc`;
+
+    const response = await axios.get(url, {
+      headers: { 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN }
+    });
+
+    const products = (response.data.products || []).map(p => ({
       id: p.id,
-      name: p.name,
-      sku: p.source_variant_id || '',
+      name: p.title,
+      sku: p.variants?.[0]?.sku || '',
+      shopifyId: p.id,
     }));
 
-    res.json({ success: true, products });
+    // Also try to find matching Lightspeed product IDs by name
+    // For PO creation we need the LS product ID
+    const lsProducts = await lsRequest('GET', `2.0/products?page_size=200`);
+    const lsMap = {};
+    (lsProducts.data || []).forEach(p => { lsMap[p.name?.toLowerCase()] = p.id; });
+
+    const enriched = products.map(p => ({
+      ...p,
+      id: lsMap[p.name?.toLowerCase()] || p.id,
+      lightspeedId: lsMap[p.name?.toLowerCase()] || null,
+    }));
+
+    res.json({ success: true, products: enriched });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
