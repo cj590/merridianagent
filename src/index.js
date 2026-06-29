@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import intakeRouter from './api/intake.js';
+import poRouter from './api/po.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -18,6 +19,7 @@ app.get('/health', (req, res) => {
 
 // Routes
 app.use('/api/intake', intakeRouter);
+app.use('/api/po', poRouter);
 
 app.listen(PORT, () => {
   console.log(`Merridian Intake backend running on port ${PORT}`);
