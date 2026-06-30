@@ -41,9 +41,11 @@ export async function createShopifyProduct(productData, lightspeedProductId) {
     images,
     retailPrice,
     vendor,
+    lightspeedSku,
   } = productData;
 
   const fullDescription = buildHtmlDescription(description, dimensions);
+  const sku = lightspeedSku || vendorItemCode || '';
 
   const payload = {
     product: {
@@ -55,7 +57,8 @@ export async function createShopifyProduct(productData, lightspeedProductId) {
       variants: [
         {
           price: retailPrice ? String(retailPrice) : '0.00',
-          sku: vendorItemCode || '',
+          sku: sku,
+          barcode: sku,
           inventory_management: 'shopify',
         },
       ],
