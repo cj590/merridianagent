@@ -87,7 +87,18 @@ export async function createLightspeedProduct(productData) {
     }
   }
 
-  // 4. Upload image
+  // 4. Tag with merridian-agent
+  const MERRIDIAN_AGENT_TAG_ID = 'b7a7b652-e0f3-4ca4-b0b9-e499f83671d2';
+  try {
+    await lsRequest('PUT', `2.1/products/${productId}`, {
+      common: { tags: [MERRIDIAN_AGENT_TAG_ID] }
+    });
+    console.log(`[LS] Tagged with merridian-agent`);
+  } catch (err) {
+    console.warn('[LS] Tagging failed (non-fatal):', err.message);
+  }
+
+  // 5. Upload image
   if (images?.length > 0) {
     await uploadImageMultipart(productId, images[0]).catch(err => {
       console.warn('[LS] Image upload failed (non-fatal):', err.message);
