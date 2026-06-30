@@ -105,7 +105,18 @@ export async function createLightspeedProduct(productData) {
     });
   }
 
-  return { lightspeedProductId: productId, product: product.data };
+  // Fetch the full product to get the Lightspeed-assigned SKU
+  let lightspeedSku = '';
+  try {
+    const fullProduct = await lsRequest('GET', `2.0/products/${productId}`);
+    const pData = Array.isArray(fullProduct.data) ? fullProduct.data[0] : fullProduct.data;
+    lightspeedSku = pData?.sku || pData?.handle || '';
+    console.log(`[LS] Product SKU: ${lightspeedSku}`);
+  } catch (err) {
+    console.warn('[LS] Could not fetch SKU (non-fatal):', err.message);
+  }
+
+  return { lightspeedProductId: productId, lightspeedSku, product: product.data };
 }
 
 async function findProductType(categoryName) {
