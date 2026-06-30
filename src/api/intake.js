@@ -43,7 +43,8 @@ router.post('/', async (req, res) => {
 
     // Step 3: Create in Shopify + push all images
     console.log(`[Intake] Creating Shopify product: ${scraped.name}`);
-    const shopifyProduct = await createShopifyProduct(productData, lsResult.lightspeedProductId);
+    const shopifyProductData = { ...productData, lightspeedSku: lsResult.lightspeedSku };
+    const shopifyProduct = await createShopifyProduct(shopifyProductData, lsResult.lightspeedProductId);
     results.shopifyProductId = shopifyProduct.id;
 
     // Push additional images (beyond first) directly to Shopify
@@ -101,7 +102,8 @@ async function processSingleUrl(url, commonData) {
   const scraped = await scrapeProduct(url, commonData.vendorCredentials || {});
   const productData = { ...scraped, ...commonData };
   const lsResult = await createLightspeedProduct(productData);
-  const shopifyProduct = await createShopifyProduct(productData, lsResult.lightspeedProductId);
+  const shopifyProductData = { ...productData, lightspeedSku: lsResult.lightspeedSku };
+  const shopifyProduct = await createShopifyProduct(shopifyProductData, lsResult.lightspeedProductId);
 
   if (scraped.images?.length > 1) {
     await pushImagesToShopifyProduct(shopifyProduct.id, scraped.images.slice(1));
