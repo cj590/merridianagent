@@ -53,7 +53,7 @@ export async function createShopifyProduct(productData, lightspeedProductId) {
       body_html: fullDescription,
       vendor: vendor || 'Unknown',
       product_type: category || 'Furniture',
-      tags: [vendorItemCode, vendor, category].filter(Boolean).join(', '),
+      tags: [vendorItemCode && vendorItemCode.toLowerCase() !== 'sku' ? vendorItemCode : null, vendor, category].filter(Boolean).join(', '),
       variants: [
         {
           price: retailPrice ? String(retailPrice) : '0.00',
